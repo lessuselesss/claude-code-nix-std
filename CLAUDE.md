@@ -306,7 +306,55 @@ nix run .#security-audit "scan for vulnerabilities"
 # Test with continuation
 nix run .#web-dev "test UI"
 nix run .#web-dev -- --continue -p "verify fixes"
+
+# Test zen-agents workspace (multi-model AI orchestration)
+nix run .#zen-agents "analyze this codebase using multiple AI models"
+nix run .#zen-agents "use consensus to decide on architecture approach"
+nix run .#zen-agents "delegate this ML task to gemini CLI"
 ```
+
+### Testing Zen-Agents Workspace
+
+The `zen-agents` workspace provides access to multiple AI models and CLI agents through the Zen MCP server:
+
+**Available Models:**
+- Gemini (2.5-pro, 2.0-flash, 2.0-flash-lite) via GEMINI_API_KEY
+- GPT-4, Claude, other models via OPENROUTER_API_KEY
+- Local models via CLI delegation (gemini-cli, qwen-cli, codex-cli)
+
+**Available Tools:**
+- `chat` - Collaborative thinking with specific models
+- `thinkdeep` - Multi-stage investigation and analysis
+- `planner` - Sequential task planning
+- `consensus` - Multi-model decision making through debate
+- `codereview` - Systematic code review with expert validation
+- `debug` - Root cause analysis
+- `precommit` - Git change validation
+- `clink` - Delegate to external CLI agents
+
+**Example Usage:**
+
+```bash
+# Multi-model consensus on architecture decision
+nix run .#zen-agents "Use consensus to decide: should we use microservices or monolith for this project?"
+
+# Deep analysis with thinkdeep
+nix run .#zen-agents "Use thinkdeep to investigate why our API is slow. Check database queries, algorithm complexity, and caching opportunities."
+
+# Delegate to specific CLI agent
+nix run .#zen-agents "Use clink with gemini CLI to generate ML training code for image classification"
+
+# Code review with expert validation
+nix run .#zen-agents "Use codereview to analyze security vulnerabilities in auth system"
+
+# Planning complex migrations
+nix run .#zen-agents "Use planner to create a step-by-step plan for migrating from REST to GraphQL"
+```
+
+**Environment Variables:**
+- `GEMINI_API_KEY` - Automatically set from environment
+- `OPENROUTER_API_KEY` - Automatically set from environment
+- `DEFAULT_MODEL` - Set to "auto" for automatic model selection
 
 ### Verify Flake
 
@@ -714,6 +762,10 @@ nix run .#python-dev "task"
 
 # Agent workspace
 nix run .#security-audit "task"
+
+# Zen multi-model workspace
+nix run .#zen-agents "use consensus for architecture decision"
+nix run .#zen-agents "use thinkdeep to debug performance issue"
 
 # Continue session
 nix run .#workspace -- --continue -p "task"

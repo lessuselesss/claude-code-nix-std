@@ -655,6 +655,103 @@
             }
             "Agent Gateway configuration and AI agent orchestration workspace";
         };
+
+        # Hugging Face - ML model and dataset exploration
+        huggingface = {
+          type = "app";
+          program = mkWorkspace "huggingface"
+            {
+              git = {
+                command = "uvx";
+                args = ["mcp-server-git"];
+              };
+              sequential-thinking = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-sequential-thinking"];
+              };
+              huggingface = {
+                command = "nix";
+                args = ["run" "github:modelcontextprotocol/servers/main#huggingface" "--"];
+                env = {
+                  HF_TOKEN = "$HF_TOKEN";
+                };
+              };
+              filesystem = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-filesystem"];
+              };
+            }
+            "Hugging Face Hub: search models, datasets, papers, and Gradio Spaces";
+        };
+
+        # Web Research - Advanced web search and research
+        web-research = {
+          type = "app";
+          program = mkWorkspace "web-research"
+            {
+              git = {
+                command = "uvx";
+                args = ["mcp-server-git"];
+              };
+              sequential-thinking = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-sequential-thinking"];
+              };
+              exa = {
+                command = "npx";
+                args = ["-y" "exa-mcp-server"];
+              };
+              brave-search = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-brave-search"];
+              };
+              filesystem = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-filesystem"];
+              };
+            }
+            "Advanced web research with Exa AI (web search, code search, company research, crawling)";
+        };
+
+        # Zen Agents - Multi-model AI workspace with zen-mcp-server
+        zen-agents = {
+          type = "app";
+          program = mkWorkspaceWithAgent "zen-agents"
+            {
+              git = {
+                command = "uvx";
+                args = ["mcp-server-git"];
+              };
+              sequential-thinking = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-sequential-thinking"];
+              };
+              zen = {
+                command = "nix";
+                args = ["run" "github:BeehiveInnovations/zen-mcp-server" "--"];
+                env = {
+                  GEMINI_API_KEY = "$GEMINI_API_KEY";
+                  OPENROUTER_API_KEY = "$OPENROUTER_API_KEY";
+                  DISABLED_TOOLS = "analyze,refactor,testgen,secaudit,docgen,tracer";
+                  DEFAULT_MODEL = "auto";
+                };
+              };
+              context7 = {
+                command = "npx";
+                args = ["-y" "@upstash/context7-mcp"];
+              };
+              filesystem = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-filesystem"];
+              };
+            }
+            {
+              name = "zen-orchestrator";
+              description = "Zen multi-model orchestrator";
+              prompt = "You are a multi-model AI orchestrator using the Zen MCP server. Core capabilities: 1) Access multiple AI models: Gemini (via GEMINI_API_KEY), GPT-4/Claude (via OPENROUTER_API_KEY), and local models via Qwen/Codex CLIs. 2) Use the 'chat' tool for collaborative thinking and brainstorming with different models. 3) Use 'thinkdeep' for multi-stage investigation and complex problem analysis. 4) Use 'planner' for breaking down complex tasks through sequential planning. 5) Use 'consensus' for multi-model decision making through structured debate. 6) Use 'codereview' for systematic code review with expert validation. 7) Use 'debug' for root cause analysis. 8) Use 'clink' to delegate tasks to external CLIs (gemini, codex, qwen). 9) Leverage Context7 for up-to-date library documentation. Model selection: Use 'gemini-2.5-pro' for complex reasoning, 'gemini-2.0-flash' for speed, or let DEFAULT_MODEL='auto' choose automatically. When facing complex problems, use thinkdeep or consensus to leverage multiple perspectives. For implementation tasks requiring specific CLI expertise, use clink to delegate (e.g., 'clink gemini for ML tasks', 'clink codex for code generation'). Always specify model, working_directory, and files when using zen tools.";
+            }
+            "Multi-model AI workspace with Zen MCP server (Gemini, OpenRouter, CLI agents)";
+        };
       };
     };
 }
