@@ -61,6 +61,283 @@
           -p "$@"
       ''}";
 
+      # Helper to create workspace apps with marketplace support
+      mkWorkspaceWithMarketplaces = name: servers: marketplaces: description: "${pkgs.writeShellScript "${name}-marketplace-workspace" ''
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        WORKSPACE_CONFIG=$(mktemp)
+        PLUGIN_CACHE="$HOME/.config/comr/marketplaces"
+        MARKETPLACE_PLUGINS=$(mktemp)
+        FUZZY_MODE=false
+        AGENT_MODE=false
+        AGENT_NAME=""
+
+        trap "rm -f '$WORKSPACE_CONFIG' '$MARKETPLACE_PLUGINS'" EXIT
+
+        # Parse CLI arguments
+        ARGS=()
+        while [[ $# -gt 0 ]]; do
+          case $1 in
+            --ish)
+              FUZZY_MODE=true
+              shift
+              ;;
+            --agent)
+              AGENT_MODE=true
+              AGENT_NAME="$2"
+              shift 2
+              ;;
+            *)
+              ARGS+=("$1")
+              shift
+              ;;
+          esac
+        done
+
+        # Marketplace URLs (from Nix)
+        MARKETPLACES=(${builtins.concatStringsSep " " (map (m: ''"${m}"'') marketplaces)})
+
+        # Fetch and cache marketplace plugins
+        mkdir -p "$PLUGIN_CACHE"
+        echo "{\"commands\": {}, \"agents\": {}}" > "$MARKETPLACE_PLUGINS"
+
+        for MARKETPLACE_URL in "''${MARKETPLACES[@]}"; do
+          REPO_HASH=$(echo -n "$MARKETPLACE_URL" | ${pkgs.coreutils}/bin/md5sum | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+          CACHE_DIR="$PLUGIN_CACHE/$REPO_HASH"
+          MARKETPLACE_JSON="$CACHE_DIR/marketplace.json"
+
+          # Fetch marketplace.json if not cached or older than 24h
+          if [[ ! -f "$MARKETPLACE_JSON" ]] || [[ $(${pkgs.findutils}/bin/find "$MARKETPLACE_JSON" -mtime +1 2>/dev/null | ${pkgs.coreutils}/bin/wc -l) -gt 0 ]]; then
+            echo "📦 Fetching marketplace: $MARKETPLACE_URL" >&2
+            mkdir -p "$CACHE_DIR"
+
+            # Convert GitHub repo URL to raw .claude-plugin/marketplace.json URL
+            MARKETPLACE_RAW_URL="''${MARKETPLACE_URL/github.com/raw.githubusercontent.com}/main/.claude-plugin/marketplace.json"
+
+            if ${pkgs.curl}/bin/curl -sSfL "$MARKETPLACE_RAW_URL" -o "$MARKETPLACE_JSON" 2>&1; then
+              echo "✅ Marketplace cached: $REPO_HASH" >&2
+            else
+              echo "⚠️  Failed to fetch marketplace: $MARKETPLACE_URL" >&2
+              continue
+            fi
+          fi
+
+          # Extract plugins from marketplace
+          ${pkgs.jq}/bin/jq -r '.plugins[].source' "$MARKETPLACE_JSON" 2>/dev/null | while read -r PLUGIN_SOURCE; do
+            if [[ -z "$PLUGIN_SOURCE" ]]; then continue; fi
+
+            PLUGIN_DIR="$CACHE_DIR/''${PLUGIN_SOURCE#./}"
+            mkdir -p "$PLUGIN_DIR/commands" "$PLUGIN_DIR/agents"
+
+            # Convert GitHub repo URL to API URL
+            REPO_PATH="''${MARKETPLACE_URL#https://github.com/}"
+            API_BASE="https://api.github.com/repos/$REPO_PATH/contents"
+
+            # Fetch commands
+            COMMANDS_API="$API_BASE/''${PLUGIN_SOURCE#./}/commands"
+            COMMANDS_JSON=$(${pkgs.curl}/bin/curl -sSfL "$COMMANDS_API" 2>/dev/null || echo "[]")
+
+            if [[ "$COMMANDS_JSON" != "[]" ]]; then
+              echo "$COMMANDS_JSON" | ${pkgs.jq}/bin/jq -r '.[].download_url' 2>/dev/null | while read -r DOWNLOAD_URL; do
+                FILENAME=$(${pkgs.coreutils}/bin/basename "$DOWNLOAD_URL")
+                OUTPUT_FILE="$PLUGIN_DIR/commands/$FILENAME"
+                ${pkgs.curl}/bin/curl -sSfL "$DOWNLOAD_URL" -o "$OUTPUT_FILE" 2>/dev/null && \
+                  echo "  ✓ Command: /''${FILENAME%.md}" >&2
+              done
+            fi
+
+            # Fetch agents
+            AGENTS_API="$API_BASE/''${PLUGIN_SOURCE#./}/agents"
+            AGENTS_JSON=$(${pkgs.curl}/bin/curl -sSfL "$AGENTS_API" 2>/dev/null || echo "[]")
+
+            if [[ "$AGENTS_JSON" != "[]" ]]; then
+              echo "$AGENTS_JSON" | ${pkgs.jq}/bin/jq -r '.[].download_url' 2>/dev/null | while read -r DOWNLOAD_URL; do
+                FILENAME=$(${pkgs.coreutils}/bin/basename "$DOWNLOAD_URL")
+                OUTPUT_FILE="$PLUGIN_DIR/agents/$FILENAME"
+                ${pkgs.curl}/bin/curl -sSfL "$DOWNLOAD_URL" -o "$OUTPUT_FILE" 2>/dev/null && \
+                  echo "  ✓ Agent: ''${FILENAME%.md}" >&2
+              done
+            fi
+          done
+        done
+
+        # Create workspace config
+        cat > "$WORKSPACE_CONFIG" <<'EOF'
+        ${builtins.toJSON { mcpServers = servers; }}
+        EOF
+
+        echo "🎯 Workspace: ${name}" >&2
+        echo "📝 ${description}" >&2
+        echo "🔧 Servers: $(${pkgs.jq}/bin/jq -r '.mcpServers | keys | join(", ")' "$WORKSPACE_CONFIG")" >&2
+        echo "🏪 Marketplaces: ${toString (builtins.length marketplaces)}" >&2
+        echo "" >&2
+
+        # Helper: Find command in cache
+        find_command() {
+          local CMD_NAME=$1
+          local FUZZY=$2
+
+          for MARKETPLACE_URL in "''${MARKETPLACES[@]}"; do
+            REPO_HASH=$(echo -n "$MARKETPLACE_URL" | ${pkgs.coreutils}/bin/md5sum | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+            CACHE_DIR="$PLUGIN_CACHE/$REPO_HASH"
+
+            # Try exact match
+            if [[ -f "$CACHE_DIR"/plugins/*/commands/"$CMD_NAME.md" ]]; then
+              echo "$CACHE_DIR"/plugins/*/commands/"$CMD_NAME.md"
+              return 0
+            fi
+
+            # Fuzzy match
+            if [[ "$FUZZY" == "true" ]]; then
+              local BEST_MATCH=""
+              local BEST_SCORE=999
+
+              for CMD_FILE in "$CACHE_DIR"/plugins/*/commands/*.md; do
+                [[ ! -f "$CMD_FILE" ]] && continue
+                local CMD=$(${pkgs.coreutils}/bin/basename "$CMD_FILE" .md)
+
+                # Simple string similarity
+                if [[ "$CMD" == *"$CMD_NAME"* ]] || [[ "$CMD_NAME" == *"$CMD"* ]]; then
+                  BEST_MATCH="$CMD_FILE"
+                  break
+                fi
+              done
+
+              if [[ -n "$BEST_MATCH" ]]; then
+                echo "$BEST_MATCH"
+                return 0
+              fi
+            fi
+          done
+
+          return 1
+        }
+
+        # Helper: Find agent in cache
+        find_agent() {
+          local AGENT_NAME=$1
+          local FUZZY=$2
+
+          for MARKETPLACE_URL in "''${MARKETPLACES[@]}"; do
+            REPO_HASH=$(echo -n "$MARKETPLACE_URL" | ${pkgs.coreutils}/bin/md5sum | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+            CACHE_DIR="$PLUGIN_CACHE/$REPO_HASH"
+
+            # Try exact match
+            if [[ -f "$CACHE_DIR"/plugins/*/agents/"$AGENT_NAME.md" ]]; then
+              echo "$CACHE_DIR"/plugins/*/agents/"$AGENT_NAME.md"
+              return 0
+            fi
+
+            # Fuzzy match
+            if [[ "$FUZZY" == "true" ]]; then
+              local BEST_MATCH=""
+
+              for AGENT_FILE in "$CACHE_DIR"/plugins/*/agents/*.md; do
+                [[ ! -f "$AGENT_FILE" ]] && continue
+                local AGENT=$(${pkgs.coreutils}/bin/basename "$AGENT_FILE" .md)
+
+                # Simple string similarity
+                if [[ "$AGENT" == *"$AGENT_NAME"* ]] || [[ "$AGENT_NAME" == *"$AGENT"* ]]; then
+                  BEST_MATCH="$AGENT_FILE"
+                  break
+                fi
+              done
+
+              if [[ -n "$BEST_MATCH" ]]; then
+                echo "$BEST_MATCH"
+                return 0
+              fi
+            fi
+          done
+
+          return 1
+        }
+
+        # Helper: List available commands
+        list_commands() {
+          for MARKETPLACE_URL in "''${MARKETPLACES[@]}"; do
+            REPO_HASH=$(echo -n "$MARKETPLACE_URL" | ${pkgs.coreutils}/bin/md5sum | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+            CACHE_DIR="$PLUGIN_CACHE/$REPO_HASH"
+
+            for CMD_FILE in "$CACHE_DIR"/plugins/*/commands/*.md; do
+              [[ -f "$CMD_FILE" ]] && ${pkgs.coreutils}/bin/basename "$CMD_FILE" .md
+            done
+          done | ${pkgs.coreutils}/bin/sort -u
+        }
+
+        # Helper: List available agents
+        list_agents() {
+          for MARKETPLACE_URL in "''${MARKETPLACES[@]}"; do
+            REPO_HASH=$(echo -n "$MARKETPLACE_URL" | ${pkgs.coreutils}/bin/md5sum | ${pkgs.coreutils}/bin/cut -d' ' -f1)
+            CACHE_DIR="$PLUGIN_CACHE/$REPO_HASH"
+
+            for AGENT_FILE in "$CACHE_DIR"/plugins/*/agents/*.md; do
+              [[ -f "$AGENT_FILE" ]] && ${pkgs.coreutils}/bin/basename "$AGENT_FILE" .md
+            done
+          done | ${pkgs.coreutils}/bin/sort -u
+        }
+
+        # Check if first arg is a slash command
+        PROMPT="''${ARGS[*]}"
+        if [[ "$PROMPT" =~ ^/ ]]; then
+          COMMAND_NAME="''${PROMPT%% *}"
+          COMMAND_NAME="''${COMMAND_NAME#/}"
+          COMMAND_ARGS="''${PROMPT#/* }"
+          echo "🔍 Looking for slash command: /$COMMAND_NAME" >&2
+
+          COMMAND_FILE=$(find_command "$COMMAND_NAME" "$FUZZY_MODE")
+          if [[ -n "$COMMAND_FILE" ]]; then
+            FOUND_CMD=$(${pkgs.coreutils}/bin/basename "$COMMAND_FILE" .md)
+            if [[ "$FOUND_CMD" != "$COMMAND_NAME" ]]; then
+              echo "✨ Using fuzzy match: /$FOUND_CMD (requested: /$COMMAND_NAME)" >&2
+            fi
+            # Read command and expand it as prompt
+            PROMPT=$(${pkgs.coreutils}/bin/cat "$COMMAND_FILE")
+            # Replace $ARGUMENTS placeholder
+            PROMPT="''${PROMPT//\$ARGUMENTS/$COMMAND_ARGS}"
+          else
+            echo "❌ Error: Slash command '/$COMMAND_NAME' not found" >&2
+            AVAILABLE=$(list_commands | ${pkgs.coreutils}/bin/head -5 | ${pkgs.coreutils}/bin/paste -sd ',' -)
+            echo "" >&2
+            echo "Available commands: $AVAILABLE" >&2
+            echo "Hint: Use --ish for fuzzy matching" >&2
+            exit 1
+          fi
+        fi
+
+        # Execute Claude with marketplace plugins
+        if [[ "$AGENT_MODE" == "true" ]]; then
+          echo "🤖 Agent mode: $AGENT_NAME" >&2
+
+          AGENT_FILE=$(find_agent "$AGENT_NAME" "$FUZZY_MODE")
+          if [[ -n "$AGENT_FILE" ]]; then
+            FOUND_AGENT=$(${pkgs.coreutils}/bin/basename "$AGENT_FILE" .md)
+            if [[ "$FOUND_AGENT" != "$AGENT_NAME" ]]; then
+              echo "✨ Using fuzzy match: $FOUND_AGENT (requested: $AGENT_NAME)" >&2
+            fi
+            # Read agent definition
+            AGENT_CONTENT=$(${pkgs.coreutils}/bin/cat "$AGENT_FILE")
+            # Extract description and prompt from markdown
+            AGENT_DESC=$(echo "$AGENT_CONTENT" | ${pkgs.gnugrep}/bin/grep -m1 "^#" | ${pkgs.gnused}/bin/sed 's/^# //')
+            AGENT_PROMPT="$AGENT_CONTENT"
+
+            CLAUDE_SETTINGS="$WORKSPACE_CONFIG" ${pkgs.claude-code}/bin/claude \
+              --agents "{\"$FOUND_AGENT\": {\"description\": \"$AGENT_DESC\", \"prompt\": $(echo "$AGENT_PROMPT" | ${pkgs.jq}/bin/jq -Rs .)}}" \
+              -p "$PROMPT"
+          else
+            echo "❌ Error: Agent '$AGENT_NAME' not found" >&2
+            AVAILABLE=$(list_agents | ${pkgs.coreutils}/bin/head -5 | ${pkgs.coreutils}/bin/paste -sd ',' -)
+            echo "" >&2
+            echo "Available agents: $AVAILABLE" >&2
+            echo "Hint: Use --ish for fuzzy matching" >&2
+            exit 1
+          fi
+        else
+          CLAUDE_SETTINGS="$WORKSPACE_CONFIG" ${pkgs.claude-code}/bin/claude -p "$PROMPT"
+        fi
+      ''}";
+
     in
     {
       packages.${system}.default = pkgs.writeShellScriptBin "comr" ''
@@ -713,6 +990,32 @@
             "Advanced web research with Exa AI (web search, code search, company research, crawling)";
         };
 
+        # Example: Web development with Every marketplace
+        web-dev-marketplace = {
+          type = "app";
+          program = mkWorkspaceWithMarketplaces "web-dev-marketplace"
+            {
+              git = {
+                command = "uvx";
+                args = ["mcp-server-git"];
+              };
+              sequential-thinking = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-sequential-thinking"];
+              };
+              playwright = {
+                command = "nix";
+                args = ["run" "github:modelcontextprotocol/servers/main#playwright" "--"];
+              };
+              github = {
+                command = "npx";
+                args = ["-y" "@modelcontextprotocol/server-github"];
+              };
+            }
+            ["https://github.com/EveryInc/every-marketplace"]
+            "Web development with Every marketplace (code review, planning, workflow automation)";
+        };
+
         # Zen Agents - Multi-model AI workspace with zen-mcp-server
         zen-agents = {
           type = "app";
@@ -734,6 +1037,43 @@
                   OPENROUTER_API_KEY = "$OPENROUTER_API_KEY";
                   DISABLED_TOOLS = "analyze,refactor,testgen,secaudit,docgen,tracer";
                   DEFAULT_MODEL = "auto";
+                  ZEN_CLI_CLIENTS = builtins.toJSON {
+                    gemini = {
+                      command = "gemini";
+                      roles = {
+                        default = {
+                          name = "Gemini Assistant";
+                          instructions = "You are a helpful AI assistant powered by Google Gemini.";
+                        };
+                        planner = {
+                          name = "Gemini Planner";
+                          instructions = "You are a strategic planner. Break down complex tasks into actionable steps.";
+                        };
+                        codereviewer = {
+                          name = "Gemini Code Reviewer";
+                          instructions = "You are an expert code reviewer. Analyze code for bugs, security issues, and best practices.";
+                        };
+                      };
+                    };
+                    codex = {
+                      command = "codex";
+                      roles = {
+                        default = {
+                          name = "Codex Assistant";
+                          instructions = "You are a code generation specialist powered by OpenAI Codex.";
+                        };
+                      };
+                    };
+                    claude = {
+                      command = "claude";
+                      roles = {
+                        default = {
+                          name = "Claude Assistant";
+                          instructions = "You are Claude, an AI assistant by Anthropic.";
+                        };
+                      };
+                    };
+                  };
                 };
               };
               context7 = {

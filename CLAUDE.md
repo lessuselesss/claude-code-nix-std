@@ -148,6 +148,80 @@ apps.x86_64-linux.security-audit = {
 };
 ```
 
+#### mkWorkspaceWithMarketplaces (Marketplace Workspaces)
+
+**Purpose:** Create workspace with MCP servers + Claude Code plugin marketplace integration
+
+**Signature:**
+```nix
+mkWorkspaceWithMarketplaces = name: servers: marketplaces: description: ...
+```
+
+**Usage:**
+```nix
+apps.x86_64-linux.web-dev-marketplace = {
+  type = "app";
+  program = mkWorkspaceWithMarketplaces "web-dev-marketplace"
+    {
+      git = {command = "uvx"; args = ["mcp-server-git"];};
+      playwright = {command = "nix"; args = ["run" "github:modelcontextprotocol/servers/main#playwright" "--"];};
+    }
+    ["https://github.com/EveryInc/every-marketplace"]
+    "Web dev with marketplace plugins";
+};
+```
+
+**CLI Invocation:**
+```bash
+# Regular prompt (all marketplace features available)
+nix run .#web-dev-marketplace "analyze this code"
+
+# Exact slash command
+nix run .#web-dev-marketplace "/review src/main.py"
+
+# Fuzzy slash command (finds similar command)
+nix run .#web-dev-marketplace --ish "/code-review src/main.py"
+
+# Exact agent invocation
+nix run .#web-dev-marketplace --agent security-sentinel "scan for vulnerabilities"
+
+# Fuzzy agent invocation (finds similar agent)
+nix run .#web-dev-marketplace --ish --agent security "scan this"
+```
+
+**Features:**
+- **Marketplace Fetching:** Downloads plugins from GitHub URLs on first run
+- **Plugin Caching:** Stores in `~/.config/comr/marketplaces/<hash>/` (24h TTL)
+- **Slash Commands:** Invoke `/command args` from marketplace commands/*.md
+- **Agents:** Load `--agent name` from marketplace agents/*.md
+- **Fuzzy Matching:** Use `--ish` flag for semantic similarity matching
+- **Error Handling:** Shows available commands/agents on not found
+
+**Error Example:**
+```
+❌ Error: Slash command '/code-review' not found
+Available commands: review, plan, work, triage
+
+Hint: Use --ish for fuzzy matching
+```
+
+**Marketplace Structure:**
+```
+marketplace-repo/
+├── .claude-plugin/
+│   └── marketplace.json
+└── plugins/
+    └── plugin-name/
+        ├── .claude-plugin/
+        │   └── plugin.json
+        ├── commands/
+        │   ├── review.md
+        │   └── plan.md
+        └── agents/
+            ├── security-sentinel.md
+            └── code-simplicity-reviewer.md
+```
+
 ### Server Definition Format
 
 All MCP servers use this structure:
