@@ -1,6 +1,6 @@
 # comr-flake
 
-**Claude Orchestrated MCP Router** - Nix flake for workspace-based MCP server management with AI agent specialization.
+**Claude Orchestrated Workspaces with Semantic MCP Routing to reduce token usage** - Nix flake for workspace-based MCP server management with AI agent specialization.
 
 ## Problem
 
